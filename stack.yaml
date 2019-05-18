@@ -1,0 +1,4 @@
+# https://docs.haskellstack.org/en/stable/yaml_configuration/
+resolver: lts-13.21
+packages:
+- .
