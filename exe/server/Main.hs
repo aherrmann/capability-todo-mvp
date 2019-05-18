@@ -1,4 +1,6 @@
 module Main where
 
+import TodoMvp (runTodoMvp)
+
 main :: IO ()
-main = putStrLn "Hello, Haskell!"
+main = runTodoMvp
