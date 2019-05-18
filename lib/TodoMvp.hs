@@ -20,7 +20,7 @@ import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
 import Control.Monad.IO.Class
 import Control.Monad.Reader (ReaderT (..))
-import Data.Aeson (ToJSON)
+import Data.Aeson (FromJSON, ToJSON)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Text (Text)
@@ -32,14 +32,14 @@ data Status =
     Open
   | Done
   deriving (Eq, Generic, Show)
-  deriving anyclass ToJSON
+  deriving anyclass (FromJSON, ToJSON)
 
 data Task = Task
   { description :: Text
   , status :: Status
   }
   deriving (Eq, Generic, Show)
-  deriving anyclass ToJSON
+  deriving anyclass (FromJSON, ToJSON)
 
 exampleTasks :: [Task]
 exampleTasks =
@@ -49,7 +49,8 @@ exampleTasks =
   ]
 
 class Monad m => TaskList m where
-  getTasks :: m [Task]
+  getTasks :: m [(Int, Task)]
+  createTask :: Task -> m Int
 
 newtype TaskListStm m (a :: *) =
   TaskListStm { runTaskListStm :: m a }
@@ -61,30 +62,40 @@ instance
   where
     getTasks = TaskListStm $! do
       (_, varMap) <- ask @TaskList
-      fmap IntMap.elems $! liftIO $! readTVarIO varMap
+      fmap IntMap.toList $! liftIO $! readTVarIO varMap
+    createTask newTask = TaskListStm $! do
+      (varId, varMap) <- ask @TaskList
+      liftIO $! atomically $! do
+        newId <- stateTVar varId (\count -> (count, succ count))
+        modifyTVar' varMap (IntMap.insert newId newTask)
+        pure newId
 
 newtype TodoMvpM m (a :: *) =
   TodoMvpM { runTodoMvpM :: (TVar Int, TVar (IntMap Task)) -> m a }
   deriving (Functor, Applicative, Monad, TaskList)
     via TaskListStm (MonadReader (ReaderT (TVar Int, TVar (IntMap Task)) m))
 
-type TodoMvpApi = "tasks" :> Get '[JSON] [Task]
+type TodoMvpApi =
+  "tasks" :> Get '[JSON] [(Int, Task)]
+  :<|> "tasks" :> ReqBody '[JSON] Task :> Post '[JSON] Int
 
 todoMvpServer :: TaskList m => ServerT TodoMvpApi m
-todoMvpServer = pure exampleTasks
+todoMvpServer = getTasks :<|> createTask
 
 todoMvpApi :: Proxy TodoMvpApi
 todoMvpApi = Proxy
 
 hoistTodoMvp :: MonadIO m
-  => ServerT TodoMvpApi (TodoMvpM m) -> ServerT TodoMvpApi m
-hoistTodoMvp m = do
-  varId <- liftIO $! newTVarIO 3
-  varMap <- liftIO $! newTVarIO (IntMap.fromList $! zip [0..] exampleTasks)
-  hoistServer todoMvpApi (flip runTodoMvpM (varId, varMap)) m
+  => (TVar Int, TVar (IntMap Task))
+  -> ServerT TodoMvpApi (TodoMvpM m)
+  -> ServerT TodoMvpApi m
+hoistTodoMvp r = hoistServer todoMvpApi (flip runTodoMvpM r)
 
-todoMvpApp :: Application
-todoMvpApp = serve todoMvpApi $! hoistTodoMvp todoMvpServer
+todoMvpApp :: (TVar Int, TVar (IntMap Task)) -> Application
+todoMvpApp r = serve todoMvpApi $! (hoistTodoMvp r) todoMvpServer
 
 runTodoMvp :: IO ()
-runTodoMvp = run 8081 todoMvpApp
+runTodoMvp = do
+  varId <- liftIO $! newTVarIO 3
+  varMap <- liftIO $! newTVarIO (IntMap.fromList $! zip [0..] exampleTasks)
+  run 8081 (todoMvpApp (varId, varMap))
