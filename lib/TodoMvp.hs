@@ -21,6 +21,8 @@ import Control.Concurrent.STM.TVar
 import Control.Monad.IO.Class
 import Control.Monad.Reader (ReaderT (..))
 import Data.Aeson (ToJSON)
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IntMap
 import Data.Text (Text)
 import GHC.Generics (Generic)
 import Network.Wai.Handler.Warp
@@ -54,19 +56,17 @@ newtype TaskListStm m (a :: *) =
   deriving newtype (Functor, Applicative, Monad, MonadIO)
 instance
   ( MonadIO m
-  , HasReader TaskList (TVar [Task]) m
+  , HasReader TaskList (TVar Int, TVar (IntMap Task)) m
   ) => TaskList (TaskListStm m)
   where
     getTasks = TaskListStm $! do
-      var <- ask @TaskList
-      liftIO $! readTVarIO var
+      (_, varMap) <- ask @TaskList
+      fmap IntMap.elems $! liftIO $! readTVarIO varMap
 
-newtype TodoMvpM m a = TodoMvpM (ReaderT (TVar [Task]) m a)
-  deriving newtype (Functor, Applicative, Monad)
-  deriving TaskList via TaskListStm (MonadReader (ReaderT (TVar [Task]) m))
-
-runTodoMvpM :: TVar [Task] -> TodoMvpM m a -> m a
-runTodoMvpM r (TodoMvpM m) = runReaderT m r
+newtype TodoMvpM m (a :: *) =
+  TodoMvpM { runTodoMvpM :: (TVar Int, TVar (IntMap Task)) -> m a }
+  deriving (Functor, Applicative, Monad, TaskList)
+    via TaskListStm (MonadReader (ReaderT (TVar Int, TVar (IntMap Task)) m))
 
 type TodoMvpApi = "tasks" :> Get '[JSON] [Task]
 
@@ -79,8 +79,9 @@ todoMvpApi = Proxy
 hoistTodoMvp :: MonadIO m
   => ServerT TodoMvpApi (TodoMvpM m) -> ServerT TodoMvpApi m
 hoistTodoMvp m = do
-  var <- liftIO $! newTVarIO exampleTasks
-  hoistServer todoMvpApi (runTodoMvpM var) m
+  varId <- liftIO $! newTVarIO 3
+  varMap <- liftIO $! newTVarIO (IntMap.fromList $! zip [0..] exampleTasks)
+  hoistServer todoMvpApi (flip runTodoMvpM (varId, varMap)) m
 
 todoMvpApp :: Application
 todoMvpApp = serve todoMvpApi $! hoistTodoMvp todoMvpServer
