@@ -16,6 +16,9 @@ module TodoMvp
   ) where
 
 import Capability.Reader
+import Control.Concurrent.STM
+import Control.Concurrent.STM.TVar
+import Control.Monad.IO.Class
 import Control.Monad.Reader (ReaderT (..))
 import Data.Aeson (ToJSON)
 import Data.Text (Text)
@@ -46,21 +49,23 @@ exampleTasks =
 class Monad m => TaskList m where
   getTasks :: m [Task]
 
-newtype TaskListReader m (a :: *) =
-  TaskListReader { runTaskListReader :: m a }
-  deriving newtype (Functor, Applicative, Monad)
+newtype TaskListStm m (a :: *) =
+  TaskListStm { runTaskListStm :: m a }
+  deriving newtype (Functor, Applicative, Monad, MonadIO)
 instance
-  ( Monad m
-  , HasReader TaskList [Task] m
-  ) => TaskList (TaskListReader m)
+  ( MonadIO m
+  , HasReader TaskList (TVar [Task]) m
+  ) => TaskList (TaskListStm m)
   where
-    getTasks = TaskListReader $! ask @TaskList
+    getTasks = TaskListStm $! do
+      var <- ask @TaskList
+      liftIO $! readTVarIO var
 
-newtype TodoMvpM m a = TodoMvpM (ReaderT [Task] m a)
+newtype TodoMvpM m a = TodoMvpM (ReaderT (TVar [Task]) m a)
   deriving newtype (Functor, Applicative, Monad)
-  deriving TaskList via TaskListReader (MonadReader (ReaderT [Task] m))
+  deriving TaskList via TaskListStm (MonadReader (ReaderT (TVar [Task]) m))
 
-runTodoMvpM :: [Task] -> TodoMvpM m a -> m a
+runTodoMvpM :: TVar [Task] -> TodoMvpM m a -> m a
 runTodoMvpM r (TodoMvpM m) = runReaderT m r
 
 type TodoMvpApi = "tasks" :> Get '[JSON] [Task]
@@ -71,8 +76,11 @@ todoMvpServer = pure exampleTasks
 todoMvpApi :: Proxy TodoMvpApi
 todoMvpApi = Proxy
 
-hoistTodoMvp :: ServerT TodoMvpApi (TodoMvpM m) -> ServerT TodoMvpApi m
-hoistTodoMvp = hoistServer todoMvpApi (runTodoMvpM exampleTasks)
+hoistTodoMvp :: MonadIO m
+  => ServerT TodoMvpApi (TodoMvpM m) -> ServerT TodoMvpApi m
+hoistTodoMvp m = do
+  var <- liftIO $! newTVarIO exampleTasks
+  hoistServer todoMvpApi (runTodoMvpM var) m
 
 todoMvpApp :: Application
 todoMvpApp = serve todoMvpApi $! hoistTodoMvp todoMvpServer

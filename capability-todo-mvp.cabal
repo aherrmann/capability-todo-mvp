@@ -26,6 +26,7 @@ library
                        mtl,
                        servant,
                        servant-server,
+                       stm,
                        text,
                        warp
   hs-source-dirs:      lib
