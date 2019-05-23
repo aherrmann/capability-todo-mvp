@@ -51,6 +51,8 @@ exampleTasks =
 class Monad m => TaskList m where
   getTasks :: m [(Int, Task)]
   createTask :: Task -> m Int
+  insertTask :: Int -> Task -> m ()
+  deleteTask :: Int -> m ()
 
 newtype TaskListStm m (a :: *) =
   TaskListStm { runTaskListStm :: m a }
@@ -69,6 +71,14 @@ instance
         newId <- stateTVar varId (\count -> (count, succ count))
         modifyTVar' varMap (IntMap.insert newId newTask)
         pure newId
+    insertTask id task = TaskListStm $! do
+      (_, varMap) <- ask @TaskList
+      liftIO $! atomically $!
+        modifyTVar' varMap $! IntMap.insert id task
+    deleteTask id = TaskListStm $! do
+      (_, varMap) <- ask @TaskList
+      liftIO $! atomically $!
+        modifyTVar' varMap $! IntMap.delete id
 
 newtype TodoMvpM m (a :: *) =
   TodoMvpM { runTodoMvpM :: (TVar Int, TVar (IntMap Task)) -> m a }
@@ -78,9 +88,11 @@ newtype TodoMvpM m (a :: *) =
 type TodoMvpApi =
   "tasks" :> Get '[JSON] [(Int, Task)]
   :<|> "tasks" :> ReqBody '[JSON] Task :> Post '[JSON] Int
+  :<|> "tasks" :> Capture "id" Int :> ReqBody '[JSON] Task :> PutNoContent '[JSON] ()
+  :<|> "tasks" :> Capture "id" Int :> DeleteNoContent '[JSON] ()
 
 todoMvpServer :: TaskList m => ServerT TodoMvpApi m
-todoMvpServer = getTasks :<|> createTask
+todoMvpServer = getTasks :<|> createTask :<|> insertTask :<|> deleteTask
 
 todoMvpApi :: Proxy TodoMvpApi
 todoMvpApi = Proxy
